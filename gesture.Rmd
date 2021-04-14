@@ -1,0 +1,371 @@
+---
+title: "Mixed Poisson regression"
+author: "Bodo"
+date: "29/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Prelims
+
+Load packages:
+
+```{r, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(brms)
+```
+
+Load the *dyadsorifics.csv*:
+
+```{r, warning = FALSE, message = FALSE}
+dyads <- read_csv('dyads.csv')
+```
+
+Check them:
+
+```{r}
+set.seed(42)
+sample_n(dyads, 4)
+```
+
+## Visualize Poisson distribution
+
+Let's visualize the Poisson distribution for lambda = 1 and lambda = 4 for gesturess ranging from 0 to 10.
+
+First, generate the data to be plotted:
+
+```{r}
+# Generate vectors of gesturess and probabilities:
+
+x <- 0:10
+y1 <- dpois(x, lambda = 0.5)
+y4 <- dpois(x, lambda = 4)
+
+# Put into tibble:
+
+df <- tibble(count = c(x, x),
+             prob = c(y1, y4),
+             lambda = rep(c('\u03bb = 1', '\u03bb = 4'),
+                          each = length(x)))
+```
+
+Then the plot:
+
+```{r, fig.width = 8, fig.height = 6}
+pois_p <- df %>% 
+  ggplot(aes(x = count, y = prob, fill = lambda)) +
+  geom_col(alpha = 0.8, position = 'dodge') +
+  scale_fill_manual(values = c("#E69F00", "#0072B2")) +
+  theme_minimal() +
+  xlab('Count') +
+  ylab('Probability') +
+  theme(legend.position = 'bottom',
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.title = element_blank(),
+        axis.title.x = element_text(face = 'bold', size = 18,
+                                    margin = margin(t = 20, b = 0,
+                                                    l = 0, r= 0)),
+        axis.title.y = element_text(face = 'bold', size = 18,
+                                    margin = margin(r = 20, l = 0,
+                                                    t = 0, b = 0)),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 16)) +
+  scale_x_continuous(breaks = 0:10)
+
+# Show & save:
+
+pois_p
+ggsave(plot = pois_p, filename = 'poisson.pdf',
+       width = 10, height = 6, device = cairo_pdf)
+```
+
+## Bayesian Poisson regression (no random effects)
+
+Our analysis starts with a simple Poisson regression model. We are going to ignore random effects and prior specifications for now, both of which will be dealt with later.
+
+First, we specify the settings for parallel processing (to instruct R to use all cores of my computer):
+
+```{r}
+options(mc.cores=parallel::detectCores())
+```
+
+... as well as control parameters for MCMC sampling:
+
+```{r}
+mcmc_controls <- list(adapt_delta = 0.999,
+                      max_treedepth = 13)
+```
+
+Fit the model.
+
+```{r}
+mdl <- brm(gestures ~ context,
+                data = dyads, family = poisson,
+                seed = 666)
+```
+
+Summarize the model:
+
+```{r}
+mdl
+```
+
+Calculate the predictions for both conditions to show how the coefficients are to be interpreted:
+
+```{r}
+coefs <- as.vector(fixef(mdl)[, 1])
+
+# Log prediction for "friend" condition:
+
+coefs[1] + 0 * coefs[2]
+
+# Log prediction for "professor" condition:
+
+coefs[1] + 1 * coefs[2]
+```
+
+To get the predicted rate (more easily interpretable than log rates), exponentiate:
+
+```{r}
+exp(coefs[1] + 0 * coefs[2])
+exp(coefs[1] + 1 * coefs[2])
+```
+
+## Incorporating random effects
+
+The above model violates the independence assumption and does not use the heterogeneity across speakers/items for inference, thus grossly misrepresenting the data. To deal with the fact that there are repeated samples per speakers and per items, we need to incorporate random effects. First, let's go with a random intercept only model:
+
+```{r}
+# Fit:
+
+mdl <- brm(gestures ~ context + (1|ID),
+                control = mcmc_controls,
+                seed = 666,
+                data = dyads, family = poisson,
+                warmup = 4000, iter = 6000)
+
+# Show:
+
+mdl
+```
+
+Next, add random slopes:
+
+```{r}
+mdl <- brm(gestures ~ context + (1 + context|ID),
+                data = dyads, family = poisson,
+                control = mcmc_controls,
+                seed = 666,
+                warmup = 4000, iter = 6000)
+
+# Show:
+
+mdl
+```
+
+## Incorporating an exposure variable
+
+We add the exposure variable as a logged term:
+
+```{r}
+mdl <- brm(gestures ~ context + offset(log(dur)) +
+                  (1 + context|ID),
+                data = dyads, family = poisson,
+                control = mcmc_controls,
+                seed = 666,
+                warmup = 4000, iter = 6000,
+                save_all_pars = TRUE)
+
+# Show:
+
+mdl
+```
+
+## Switching to a negative binomial model
+
+Switching to a negative binomial model:
+
+```{r}
+negbinom_mdl <- brm(gestures ~ context + offset(log(dur)) +
+                      (1 + context|ID),
+                    data = dyads, family = negbinomial,
+                    control = mcmc_controls,
+                seed = 666,
+                warmup = 4000, iter = 6000,
+                save_all_pars = TRUE)
+
+# Show:
+
+negbinom_mdl
+```
+
+Assess whether there is enough overdispersion in the data to warrant a negative binomial model.
+
+```{r}
+# LOO-CV per model:
+
+pois_loo <- loo(mdl, moment_match = TRUE)
+negbinom_loo <- loo(negbinom_mdl, moment_match = TRUE)
+
+# Compare:
+
+loos <- loo_compare(pois_loo, negbinom_loo)
+
+# Show:
+
+loos
+```
+
+Also check WAIC:
+
+```{r}
+WAIC(mdl)
+WAIC(negbinom_mdl)
+```
+
+## Specifying priors
+
+Visualize different prior configurations for slope term (weakly informative priors with normal distributions centered at zero and different standard deviations).
+
+```{r, fig.width = 8, fig.height = 6}
+prior_p <- ggplot(data = tibble(x = c(-5, 5)), aes(x = x)) +
+  stat_function(fun = dnorm, n = 101,
+                args = list(mean = 0, sd = 1)) +
+  stat_function(fun = dnorm, n = 101,
+                args = list(mean = 0, sd = 0.5), linetype = 2) +
+  stat_function(fun = dnorm, n = 101,
+                args = list(mean = 0, sd = 2), linetype = 3) +
+  scale_x_continuous(breaks = -4:4) +
+  ylab('Probability density') +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_blank())
+
+# Show and save:
+
+prior_p
+ggsave(plot = prior_p, filename = 'slope_prior_options.pdf',
+       width = 6, height = 3)
+```
+
+First, we focus on specifying a weakly informative prior on the slope:
+
+```{r}
+weak_priors <- prior(normal(0, 0.5), class = b)
+```
+
+Add prior:
+
+```{r}
+negbinom_mdl <- brm(gestures ~ context + 
+                      offset(log(dur)) +
+                      (1 + context|ID),
+                    data = dyads, family = negbinomial,
+                    control = mcmc_controls,
+                    prior = weak_priors,
+                seed = 666,
+                warmup = 4000, iter = 6000)
+
+# Show:
+
+negbinom_mdl
+```
+
+## Posterior predictive checks
+
+Assess model adequacy with pp checks:
+
+```{r, fig.width = 10, fig.height = 6}
+my_pp <- pp_check(negbinom_mdl, nsample = 100)
+
+# Show and save:
+
+my_pp
+ggsave(plot = my_pp, filename = 'pp_checks.pdf',
+       width = 8, height = 6)
+```
+
+
+## Inference and substantive evaluation
+
+We can calculate the posterior probability of the effect being below zero:
+
+```{r}
+posts <- posterior_samples(negbinom_mdl)
+
+# Show first 3 rows of the first 9 columns:
+
+posts %>%
+  slice_head(n = 3) %>%
+  select(1:2)
+```
+
+Check how many posterior samples for the condition slope are above zero:
+
+```{r}
+sum(posts$b_contextprof > 0) / nrow(posts)
+```
+
+Visualize the posterior distribution:
+
+```{r, fig.width = 8, fig.height = 6}
+post_p <- posts %>%
+  ggplot(aes(x = b_contextprof)) +
+  geom_density(fill = 'steelblue', alpha = 0.5) + 
+  geom_vline(aes(xintercept = 0), linetype = 2) + 
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  xlab('Posterior estimate of condition difference') +
+  xlim(c(-0.5, 0.5))
+
+# Show and save:
+
+post_p
+ggsave(plot = post_p, filename = 'slope_posterior.pdf',
+       width = 6, height = 4)
+```
+
+## Not discussed in paper: additional prior specifications
+
+Add priors for all parameters:
+
+```{r}
+my_priors <- c(prior(normal(0, 2), class = Intercept),
+               prior(normal(0, 0.5), class = b),
+               prior(cauchy(0, 2), class = sd),
+               prior(lkj(2), class = cor))
+```
+
+Add prior:
+
+```{r}
+negbinom_mdl <- brm(gestures ~ context +
+                      offset(log(dur)) +
+                      (1 + context|ID),
+                    data = dyads, family = negbinomial,
+                    control = mcmc_controls,
+                    prior = my_priors,
+                seed = 666,
+                warmup = 4000, iter = 6000)
+
+# Show:
+
+negbinom_mdl
+```
+
+
+This completes this analysis.
+
+
+
+
+
+
