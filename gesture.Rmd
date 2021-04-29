@@ -59,9 +59,7 @@ pois_p <- df %>%
   ggplot(aes(x = count, y = prob, fill = lambda)) +
   geom_col(alpha = 0.8, position = 'dodge') +
   scale_fill_manual(values = c("#E69F00", "#0072B2")) +
-  theme_minimal() +
-  xlab('Count') +
-  ylab('Probability') +
+  theme_classic() +
   theme(legend.position = 'bottom',
         panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
@@ -76,7 +74,8 @@ pois_p <- df %>%
         axis.text.x = element_text(size = 14),
         axis.text.y = element_text(size = 14),
         legend.text = element_text(size = 16)) +
-  scale_x_continuous(breaks = 0:10)
+  scale_x_continuous(name = 'Count', breaks = 0:10) +
+  scale_y_continuous(name = 'Probability', expand = c(0, 0))
 
 # Show & save:
 
@@ -105,7 +104,7 @@ mcmc_controls <- list(adapt_delta = 0.999,
 Fit the model.
 
 ```{r}
-mdl <- brm(gestures ~ context,
+mdl <- brm(gestures ~ 1 + context,
                 data = dyads, family = poisson,
                 seed = 666)
 ```
@@ -144,11 +143,11 @@ The above model violates the independence assumption and does not use the hetero
 ```{r}
 # Fit:
 
-mdl <- brm(gestures ~ context + (1|ID),
+mdl <- brm(gestures ~ 1 + context + (1|ID),
                 control = mcmc_controls,
                 seed = 666,
                 data = dyads, family = poisson,
-                warmup = 4000, iter = 6000)
+                warmup = 4000, iter = 8000)
 
 # Show:
 
@@ -158,11 +157,11 @@ mdl
 Next, add random slopes:
 
 ```{r}
-mdl <- brm(gestures ~ context + (1 + context|ID),
+mdl <- brm(gestures ~ 1 + context + (1 + context|ID),
                 data = dyads, family = poisson,
                 control = mcmc_controls,
                 seed = 666,
-                warmup = 4000, iter = 6000)
+                warmup = 4000, iter = 8000)
 
 # Show:
 
@@ -174,12 +173,12 @@ mdl
 We add the exposure variable as a logged term:
 
 ```{r}
-mdl <- brm(gestures ~ context + offset(log(dur)) +
+mdl <- brm(gestures ~ 1 + context + offset(log(dur)) +
                   (1 + context|ID),
                 data = dyads, family = poisson,
                 control = mcmc_controls,
                 seed = 666,
-                warmup = 4000, iter = 6000,
+                warmup = 4000, iter = 8000,
                 save_all_pars = TRUE)
 
 # Show:
@@ -192,12 +191,12 @@ mdl
 Switching to a negative binomial model:
 
 ```{r}
-negbinom_mdl <- brm(gestures ~ context + offset(log(dur)) +
+negbinom_mdl <- brm(gestures ~ 1 + context + offset(log(dur)) +
                       (1 + context|ID),
                     data = dyads, family = negbinomial,
                     control = mcmc_controls,
                 seed = 666,
-                warmup = 4000, iter = 6000,
+                warmup = 4000, iter = 8000,
                 save_all_pars = TRUE)
 
 # Show:
@@ -242,8 +241,8 @@ prior_p <- ggplot(data = tibble(x = c(-5, 5)), aes(x = x)) +
   stat_function(fun = dnorm, n = 101,
                 args = list(mean = 0, sd = 2), linetype = 3) +
   scale_x_continuous(breaks = -4:4) +
-  ylab('Probability density') +
-  theme_minimal() +
+  scale_y_continuous(name = 'Probability density', expand = c(0, 0)) +
+  theme_classic() +
   theme(panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
         axis.title.x = element_blank())
@@ -264,14 +263,14 @@ weak_priors <- prior(normal(0, 0.5), class = b)
 Add prior:
 
 ```{r}
-negbinom_mdl <- brm(gestures ~ context + 
+negbinom_mdl <- brm(gestures ~ 1 + context + 
                       offset(log(dur)) +
                       (1 + context|ID),
                     data = dyads, family = negbinomial,
                     control = mcmc_controls,
                     prior = weak_priors,
                 seed = 666,
-                warmup = 4000, iter = 6000)
+                warmup = 4000, iter = 8000)
 
 # Show:
 
@@ -298,6 +297,12 @@ ggsave(plot = my_pp, filename = 'pp_checks.pdf',
 We can calculate the posterior probability of the effect being below zero:
 
 ```{r}
+hypothesis(negbinom_mdl, 'contextprof < 0')
+```
+
+Extract posterior samples for plotting:
+
+```{r}
 posts <- posterior_samples(negbinom_mdl)
 
 # Show first 3 rows of the first 9 columns:
@@ -307,20 +312,14 @@ posts %>%
   select(1:2)
 ```
 
-Check how many posterior samples for the condition slope are above zero:
-
-```{r}
-sum(posts$b_contextprof > 0) / nrow(posts)
-```
-
-Visualize the posterior distribution:
+Visualize the posterior distribution based on this data:
 
 ```{r, fig.width = 8, fig.height = 6}
 post_p <- posts %>%
   ggplot(aes(x = b_contextprof)) +
   geom_density(fill = 'steelblue', alpha = 0.5) + 
   geom_vline(aes(xintercept = 0), linetype = 2) + 
-  theme_minimal() +
+  theme_classic() +
   theme(panel.grid.major = element_blank(),
         panel.grid.minor = element_blank()) +
   xlab('Posterior estimate of condition difference') +
@@ -347,14 +346,14 @@ my_priors <- c(prior(normal(0, 2), class = Intercept),
 Add prior:
 
 ```{r}
-negbinom_mdl <- brm(gestures ~ context +
+negbinom_mdl <- brm(gestures ~ 1 + context +
                       offset(log(dur)) +
                       (1 + context|ID),
                     data = dyads, family = negbinomial,
                     control = mcmc_controls,
                     prior = my_priors,
                 seed = 666,
-                warmup = 4000, iter = 6000)
+                warmup = 4000, iter = 8000)
 
 # Show:
 
