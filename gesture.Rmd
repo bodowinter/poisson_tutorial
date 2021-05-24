@@ -1,6 +1,6 @@
 ---
 title: "Mixed Poisson regression"
-author: "Bodo Winter & Paul Bürkner"
+author: "Anonymous"
 date: "29/10/2020"
 output: html_document
 ---
