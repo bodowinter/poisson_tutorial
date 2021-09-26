@@ -1,6 +1,6 @@
 ---
-title: "Mixed Poisson regression"
-author: "Anonymous"
+title: "Tutorial for mixed Poisson regression with brms"
+author: "Bodo Winter & Paul Bürkner"
 date: "29/10/2020"
 output: html_document
 ---
@@ -11,222 +11,143 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Instructions
 
-We recommend reading the full paper first before working through this markdown file. The markdown serves a dual purpose: It reproduces all the values and results reported in the paper, and it also reproduces all figures.
+In this analysis, we'll analyze gesture data with a multilevel Poisson model. This serves as an introduction to both generalized linear models and multilevel models.
 
 ## Prelims
 
-Load packages:
+First, let's load the packages we'll need. `tidyverse` for data processing, and `brms` for Bayesian regression models.
 
-```{r, warning = FALSE, message = FALSE}
+```{r load_packages, warning = FALSE, message = FALSE}
 library(tidyverse)
 library(brms)
 ```
 
-Load the *dyads.csv* dataset that contains gesture counts:
+Next, load the `dyads.csv` dataset that contains gesture counts:
 
-```{r, warning = FALSE, message = FALSE}
+```{r load_data, warning = FALSE, message = FALSE}
 dyads <- read_csv('dyads.csv')
 ```
 
-Check a few random rows of the tibble with the tidyverse function *sample_n()*:
+It's always a good idea to familiarize yourself with the data first. Check a few random rows of the tibble with the tidyverse function `sample_n()`. Here, we are drawing 4 random rows just to get a first impression. If you are in an interactive R session (rather than reading the knitted version of this markdown), consider repeating this command to get a few more random rows.
 
-```{r}
-set.seed(42) # seed value for consistent results in paper
+```{r familiarize_with_data}
 sample_n(dyads, 4)
 ```
 
-## Visualize Poisson distribution
+Ok, so let me explain the content of the columns to you. First, we have the `ID` column, which are participant identifiers. Let's check how many participants there are using the `count()` function:
 
-Readers interested in the Poisson analysis itself (rather than plotting example distributions) are advised to skip this section, which reproduces Figure 1 (Poisson distribution) and Figure 5 (negative binomial distribution) of the paper.
-
-Let's visualize the Poisson distribution for lambda = 1 and lambda = 4 for counts ranging from 0 to 10. Lambda = 1 and lambda = 4 are just chosen here as two exemplary values. The *dpois()* function returns the probability for a vector of counts, in this case the variable *x*.
-
-First, generate the data to be plotted:
-
-```{r}
-# Generate vectors of counts and probabilities:
-
-x <- 0:10
-y1 <- dpois(x, lambda = 0.5)
-y4 <- dpois(x, lambda = 4)
-
-# Put into tibble for ggplot2 plotting:
-
-df <- tibble(count = c(x, x),
-             prob = c(y1, y4),
-             lambda = rep(c('\u03bb = 1', '\u03bb = 4'),
-                          each = length(x)))
+```{r count_participants}
+dyads %>%
+  count(ID)
 ```
 
-Then the plot:
+This shows us that there are 2 data points per participant (one for each condition). By copy & pasting this pipe line and further piping it to the `nrow()` function we get the counts of all participants, because each row is one participant:
 
-```{r, fig.width = 8, fig.height = 6}
-# Define plot with aesthetic mappings and add geoms:
-
-pois_p <- df %>% 
-  ggplot(aes(x = count, y = prob, fill = lambda)) +
-  geom_col(alpha = 0.8, position = 'dodge')
-
-# Add scales:
-
-pois_p <- pois_p +
-  scale_fill_manual(values = c("#E69F00", "#0072B2")) +
-  scale_x_continuous(name = 'Count', breaks = 0:10) +
-  scale_y_continuous(name = 'Probability', expand = c(0, 0))
-
-# Tweak cosmetics of the plot:
-
-pois_p <- pois_p + 
-  theme_classic() +
-  theme(legend.position = 'bottom',
-        panel.grid.major.x = element_blank(),
-        panel.grid.minor.x = element_blank(),
-        panel.grid.minor.y = element_blank(),
-        legend.title = element_blank(),
-        axis.title.x = element_text(face = 'bold', size = 18,
-                                    margin = margin(t = 20, b = 0,
-                                                    l = 0, r= 0)),
-        axis.title.y = element_text(face = 'bold', size = 18,
-                                    margin = margin(r = 20, l = 0,
-                                                    t = 0, b = 0)),
-        axis.text.x = element_text(size = 14),
-        axis.text.y = element_text(size = 14),
-        legend.text = element_text(size = 16))
-
-# Show the plot & save externally:
-
-pois_p
-ggsave(plot = pois_p, filename = 'poisson.pdf',
-       width = 10, height = 6, device = cairo_pdf)
+```{r count_participants_2}
+dyads %>%
+  count(ID) %>% 
+  nrow()
 ```
 
-This 
+Ok, so what about the other columns?
 
-## Visualize the negative binomial distribution
+- `context`: the main condition variable, whether the participant spoke to a friend or a professor
+- `dur`: the duration of each trial in seconds
+- `language`: whether the participant was a speaker of Catalan or Korean
+- `gender`: the self-identified gender of the participant (only two levels in this case, based on our participants' responses)
+- `gestures`: the main response variable, the count of gestures (unbounded count variable)
 
-The negative binomial distribution is a close cousin to the Poisson distribution with an additional parameter that specifies dispersion, which is called *size*.
+Let's calculate the average number of gestures per condition (= context):
 
-```{r}
-# Generate vectors of counts and probabilities:
-
-x <- 0:10
-y1 <- dnbinom(x, mu = 4, size = 1)
-y100 <- dnbinom(x, mu = 4, size = 100)
-
-# Put into tibble for ggplot2 plotting:
-
-df <- tibble(count = c(x, x),
-             prob = c(y1, y100),
-             shape = rep(c('shape = 1', 'shape = 100'),
-                          each = length(x)))
+```{r calculate_gesture_average}
+dyads %>% 
+  group_by(context) %>% 
+  summarize(M = mean(gestures))
 ```
 
-Then plot this. For comparison's sake we will 
+Ok, so more gestures in the "friend" condition. This picture could be deceiving however, as the trials had unequal intervals, i.e., some were shorter, others were longer. It could be more informative to compute rates, and then compute means. We can do this by slotting in a `mutate()` function call into the pipeline above. Within this function, we compute rates by dividing the counts by the duration (= gestures per second).
 
-```{r, fig.width = 8, fig.height = 6}
-# Define plot basics:
-
-negbinom_p <- df %>% 
-  ggplot(aes(x = count, y = prob, fill = shape)) +
-  geom_col(alpha = 0.8, position = 'dodge')
-
-# Add scales:
-
-negbinom_p <- negbinom_p +
-  scale_fill_manual(values = c("#E69F00", "#0072B2")) +
-  scale_x_continuous(name = 'Count', breaks = 0:10) +
-  scale_y_continuous(name = 'Probability', breaks = seq(0, 0.3, 0.1),
-                     expand = c(0, 0), limits = c(0, 0.3))
-  
-# Tweak plot cosmetics:
-
-negbinom_p <- negbinom_p +
-  theme_classic() +
-  theme(legend.position = 'bottom',
-        panel.grid.major.x = element_blank(),
-        panel.grid.minor.x = element_blank(),
-        panel.grid.minor.y = element_blank(),
-        legend.title = element_blank(),
-        axis.title.x = element_text(face = 'bold', size = 18,
-                                    margin = margin(t = 20, b = 0,
-                                                    l = 0, r= 0)),
-        axis.title.y = element_text(face = 'bold', size = 18,
-                                    margin = margin(r = 20, l = 0,
-                                                    t = 0, b = 0)),
-        axis.text.x = element_text(size = 14),
-        axis.text.y = element_text(size = 14),
-        legend.text = element_text(size = 16))
-
-# Show & save:
-
-negbinom_p
-ggsave(plot = negbinom_p, filename = 'negbinom.pdf',
-       width = 10, height = 6, device = cairo_pdf)
+```{r calculate_rate_average}
+dyads %>% 
+  mutate(rate = gestures / dur) %>% 
+  group_by(context) %>% 
+  summarize(M = mean(rate))
 ```
+
+A slightly higher rate of gestures per second.
 
 ## Bayesian Poisson regression (no random effects)
 
-Our analysis starts with a simple Poisson regression model. We are going to ignore random effects and prior specifications for now, both of which will be dealt with later.
+Before we start doing anything with brms, let's make sure that Stan uses all the cores on your system to run faster:
 
-We advance from simple to more complex models only for pedagogical reasons. We do not wish to imply that researchers should explore a whole range of models.
-
-First, we specify the settings for parallel processing (to instruct R to use all cores of my computer):
-
-```{r}
+```{r set_cores}
 options(mc.cores=parallel::detectCores())
 ```
 
-... as well as control parameters for MCMC sampling:
+Only for simple problems can the posterior distribution be calculated exactly. In most cases relevant to applied statistics, the posterior distribution has to be approximated instead.
+
+Markov Chain Monte Carlo (MCMC) sampling is the most standard way to approximate the posterior distribution in modern Bayesian analysis. MCMC sampling is described in more detail in McElreath (2020) ("Statistical rethinking"), but for now, it suffices to say that it is a way of sampling from the (unknown) posterior distribution in a way that is proportionate to the posterior probability, i.e., more probable parameter values will correspond to more samples.
+
+We'll change the settings for MCMC sampling here. This was done because initial exploration showed that there were "divergent transitions", which signals that there is some sort of degeneracy with the MCMC sampling process. Stan includes helpful error messages that suggest solutions to such issues, which in this case involved adjusting the following two parameters:
 
 ```{r}
 mcmc_controls <- list(adapt_delta = 0.999,
                       max_treedepth = 13)
 ```
 
-Fit the model.
+We'll build up our model in pieces for pedagogical reasons, starting with a simple Poisson regression model. We are going to ignore random effects and prior specifications for now, both of which will be dealt with later. We'll also deal with prior specifications later.
 
-```{r}
+We fit the model. The core of the formula is "gestures ~ context", the count of gestures as a function of context. The "1" stands for the intercept. You can omit it in R as all linear model functions, including `brm()` will fit an intercept by default, but it's good to be explicit. As this is a term of your model that is actually estimated, the formula should reflect this.
+
+```{r fit_poisson, warning = FALSE, message = FALSE}
 mdl <- brm(gestures ~ 1 + context,
-           data = dyads, family = poisson,
+           data = dyads,
+           family = poisson,
            seed = 666)
 ```
 
-Summarize the model:
+Next, we summarize the model by simply typing in its name.
 
-```{r}
+```{r check_poisson}
 mdl
 ```
 
-Use the *conditional_effects()* function to plot predicted values:
+Let's interpret what we got here. Your focus should be on the "Estimate" column, which is what we should strive to understand.
 
-```{r, fig.width = 4, fig.height = 5}
+Use the `conditional_effects()` function to plot predicted values:
+
+```{r show_conditional_effects, fig.width = 4, fig.height = 5}
 conditional_effects(mdl)
 ```
 
-This would be OK, but to reproduce the exact figure shown in the paper (Figure 3), we extracted the values from the *conditional_effects()* function to have more control over plotting parameters.
+This would be OK, but to reproduce the exact figure shown in the paper (Figure 3), we extracted the values from the `conditional_effects()` function to have more control over plotting parameters.
 
-Or to create a more snazzy ggplot that we can modify ourselves, we can extract the values:
+Or to create a more snazzy ggplot that we can modify ourselves, we can extract the values. The structure of this object is a list, and we use `[[1]]` here to extract the first element of the list.
 
-```{r}
-poisson_effects <- conditional_effects(mdl)
+```{r extract_conditional-effects}
+poisson_effects <- conditional_effects(mdl)[[1]]
+
+# Check:
+
+poisson_effects
 ```
 
-Extract the values into a tibble (to interrogate the structure of the *poisson_effects* object, you can use **str(poisson_effects)**):
+It would be good to rename the columns that involve "__":
 
 ```{r}
-cond_vals <- tibble(condition = c('friend', 'professor'),
-                    estimate = poisson_effects$context$`estimate__`,
-                    lower = poisson_effects$context$`lower__`,
-                    upper = poisson_effects$context$`upper__`)
+poisson_effects <- rename(poisson_effects,
+                          estimate = `estimate__`,
+                          lower = `lower__`,
+                          upper = `upper__`)
 ```
 
 Make a ggplot of this:
 
-```{r, fig.width = 4, fig.height = 5}
+```{r plot_effects_by_hand, fig.width = 4, fig.height = 5}
 ## Define plot basics and geoms:
 
-effects_p <- cond_vals %>%
-  ggplot(aes(x = condition, y = estimate,
+effects_p <- poisson_effects %>%
+  ggplot(aes(x = context, y = estimate,
              ymin = lower, ymax = upper)) +
   geom_errorbar(width = 0.25, size = 0.6) +
   geom_point(size = 3, shape = 15)
@@ -251,9 +172,9 @@ ggsave(plot = effects_p, filename = 'conditional_effects.pdf',
        width = 4, height = 5)
 ```
 
-To calculate values by hand, we use *hypothesis()*. The following evaluates the difference between the professor (dummy code = 1) and the friend (dummy code = 0) condition. The exp() is there so that the function returns raw gesture counts (rather than estimated log lambdas).
+To calculate values by hand, we use ``hypothesis()`. The following evaluates the difference between the professor (dummy code = 1) and the friend (dummy code = 0) condition. The exp() is there so that the function returns raw gesture counts (rather than estimated log lambdas).
 
-```{r}
+```{r test_hypotheses}
 h <- 'exp(Intercept + contextprof * 1) = exp(Intercept + contextprof * 0)'
 hypothesis(mdl, h)
 
@@ -265,7 +186,7 @@ hypothesis(mdl, 'exp(Intercept + contextprof * 0) = 0')
 
 As the data includes repeated measures per individual, the above model violates the independence assumption. A simple Poisson regression model does not use the heterogeneity across speakers for inference, thus potentially grossly misrepresenting the data. To deal with the fact that there are repeated samples per speakers and per items, we need to incorporate random effects. First, let's go with a random intercept only model:
 
-```{r}
+```{r random_intercept_mdl}
 # Fit:
 
 mixed_mdl <- brm(gestures ~ 1 + context + (1|ID),
@@ -281,7 +202,7 @@ mixed_mdl
 
 This model allows for different individuals to have different overall gesture counts. However, because the model is lacking random slopes for the effect of context, it assumes that the effect of context is constant across all individuals. This is an unreasonable assumption to make in this case, as surely some people's gesture rates could me more affected by the friend vs. professor manipulation than others. Therefore, we add random slopes:
 
-```{r}
+```{r random_slope_mdl}
 mixed_mdl <- brm(gestures ~ 1 + context + (1 + context|ID),
                  data = dyads, family = poisson,
                  control = mcmc_controls,
@@ -297,7 +218,7 @@ mixed_mdl
 
 The model above does not account for the fact that counts were observed for unequal time intervals. We add the exposure variable as a logged term:
 
-```{r}
+```{r exposure_mdl}
 exposure_mdl <- brm(gestures ~ 1 + context + offset(log(dur)) +
                       (1 + context|ID),
                     data = dyads, family = poisson,
@@ -313,7 +234,7 @@ exposure_mdl
 
 Calculate the predicted values separately for each condition:
 
-```{r}
+```{r test_hypotheses_exposure_mdl}
 friend_h <- 'exp(Intercept + contextprof * 0) = 0'
 hypothesis(exposure_mdl, friend_h)
 
@@ -325,10 +246,20 @@ Notice that these values are now much smaller than what was discussed above beca
 
 ## Switching to a negative binomial model
 
-It is possible that there is overdispersion in the data (i.e., variance > mean than what is expected under Poisson). To explore this, let's switch to a negative binomial model:
+As mentioned in the body of the text, the variance is exactly equal to the mean for the Poisson distribution. This mean = variance assumption can easily be demonstrated by drawing 10,000 random numbers from the Poisson distribution at two specified lambdas, lambda = and lambda = 4, corresponding to Figure 1 in the paper.
 
 ```{r}
-negbinom_mdl <- brm(gestures ~ 1 + context + offset(log(dur)) +
+var(rpois(10000, lambda = 1))
+
+var(rpois(10000, lambda = 4))
+```
+
+Notice that the variance of the first set of random draws (y1) approximates 1, and the variance of the second set of random draws (y4) approximates 4, which are the corresponding lambda values. In the context of the Poisson distribution, the variance is also called "dispersion".
+
+It is possible that there is overdispersion in the data (i.e., variance > mean than what is expected under Poisson). To explore this, let's switch to a negative binomial model:
+
+```{r negative_binomial_mdl}
+negbinom_mdl <- brm(gestures | rate(dur) ~ 1 + context  +
                       (1 + context|ID),
                     data = dyads, family = negbinomial,
                     control = mcmc_controls,
@@ -343,7 +274,7 @@ negbinom_mdl
 
 We can assess whether there is enough overdispersion in the data to warrant a negative binomial model.
 
-```{r}
+```{r LOOCV_model_comparison}
 # LOO-CV per model:
 
 pois_loo <- loo(exposure_mdl, moment_match = TRUE)
@@ -364,20 +295,36 @@ In this particular case, there is no stark difference between the two models. Th
 
 Visualize different prior configurations for slope term (weakly informative priors with normal distributions centered at zero and different standard deviations). This reproduces Figure 5 in the paper.
 
-```{r, fig.width = 8, fig.height = 6}
+```{r visualize_priors, fig.width = 8, fig.height = 6}
 prior_p <- ggplot(data = tibble(x = c(-5, 5)), aes(x = x)) +
   stat_function(fun = dnorm, n = 101,
-                args = list(mean = 0, sd = 1)) +
+                args = list(mean = 0, sd = 1),
+                aes(color = 'red'), size = 1.15) +
   stat_function(fun = dnorm, n = 101,
-                args = list(mean = 0, sd = 0.5), linetype = 2) +
+                args = list(mean = 0, sd = 0.5), linetype = 2,
+                aes(color = 'blue'), size = 0.65) +
   stat_function(fun = dnorm, n = 101,
-                args = list(mean = 0, sd = 2), linetype = 3) +
+                args = list(mean = 0, sd = 2), linetype = 3,
+                aes(color = 'black'), size = 1.15) +
+  scale_color_manual(values = c('red', 'blue', 'black'),
+                     name = 'Standard deviation',
+                     breaks = c('red', 'blue', 'black'),
+                     labels = c('SD = 1', 'SD = 0.5', 'SD = 2')) +
   scale_x_continuous(breaks = -4:4) +
   scale_y_continuous(name = 'Probability density', expand = c(0, 0)) +
   theme_classic() +
   theme(panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
-        axis.title.x = element_blank())
+        axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        axis.title.y = element_text(face = 'bold', size = 10,
+                                    margin = margin(r = 15, l = 0,
+                                                    t = 0, b = 0)),
+        axis.title.x = element_text(face = 'bold', size = 10,
+                                    margin = margin(r = 0, l = 0,
+                                                    t = 15, b = 0))) +
+  coord_cartesian(ylim = c(0, 0.8)) +
+  xlab('Possible slope values')
 
 # Show and save:
 
@@ -388,15 +335,14 @@ ggsave(plot = prior_p, filename = 'slope_prior_options.pdf',
 
 We focus on specifying a weakly informative prior on the slope. Importantly, readers should also consider priors for the other parameters of the model, which is discussed in more detail with linguistic examples in Vasishth et al. (2018) and Nalborczyk et al. (2019).
 
-```{r}
+```{r define_priors}
 weak_priors <- prior(normal(0, 0.5), class = b)
 ```
 
 We add the prior to the negative binomial model:
 
-```{r}
-negbinom_mdl <- brm(gestures ~ 1 + context + 
-                      offset(log(dur)) +
+```{r rerun_mdl_with_priors}
+negbinom_mdl <- brm(gestures | rate(dur) ~ 1 + context + 
                       (1 + context|ID),
                     data = dyads, family = negbinomial,
                     control = mcmc_controls,
@@ -411,10 +357,10 @@ negbinom_mdl
 
 ## Posterior predictive checks
 
-Assess model adequacy with posterior predicticve checks. First, we use the pp_check() function with its default:
+Assess model adequacy with posterior predicticve checks. First, we use the `pp_check()` function with its default:
 
-```{r, fig.width = 10, fig.height = 6}
-pp_smooth <- pp_check(negbinom_mdl, nsample = 100)
+```{r pp_checks_smoothed, fig.width = 10, fig.height = 6}
+pp_smooth <- pp_check(negbinom_mdl, ndraws =  100)
 
 # Show and save:
 
@@ -423,10 +369,10 @@ ggsave(plot = pp_smooth, filename = 'pp_checks.pdf',
        width = 8, height = 6)
 ```
 
-This is not optimal however because pp_check() by default smooths, which is not ideal for discrete count data. Instead, we recommend using the ECDF (empirical cumulative distribution function):
+This is not optimal however because `pp_check()` by default smooths, which is not ideal for discrete count data. Instead, we recommend using the ECDF (empirical cumulative distribution function):
 
-```{r}
-pp_ecdf <- pp_check(negbinom_mdl, nsample = 100,
+```{r pp_checks_ecdf}
+pp_ecdf <- pp_check(negbinom_mdl, ndraws =  100,
                     type = 'ecdf_overlay')
 
 # Show and save:
@@ -442,13 +388,13 @@ The black line falls quite firmly into the blue lines, suggesting that this mode
 
 We can calculate the posterior probability of the effect being below zero:
 
-```{r}
+```{r hypothesis_testing_negbinom}
 hypothesis(negbinom_mdl, 'contextprof < 0')
 ```
 
 Extract posterior samples for plotting:
 
-```{r}
+```{r extract_posterior_samples}
 posts <- posterior_samples(negbinom_mdl)
 
 # Show first 3 rows of the first 9 columns:
@@ -458,9 +404,9 @@ posts %>%
   select(1:2)
 ```
 
-Visualize the posterior distribution based on this data. This correspond to Figure 7 in the paper.
+Visualize the posterior distribution based on this data.
 
-```{r, fig.width = 8, fig.height = 6}
+```{r visualize_posterior_difference, fig.width = 8, fig.height = 6}
 post_p <- posts %>%
   ggplot(aes(x = b_contextprof)) +
   geom_density(fill = 'steelblue', alpha = 0.5) + 
@@ -479,9 +425,3 @@ ggsave(plot = post_p, filename = 'slope_posterior.pdf',
 ```
 
 This completes this analysis.
-
-
-
-
-
-
